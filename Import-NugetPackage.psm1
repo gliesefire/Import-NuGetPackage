@@ -9,10 +9,10 @@ function Import-NuGetPackage {
         [Alias('package-name', 'name')]    
         [Parameter(
             Mandatory = $true,
-            HelpMessage = "Name of the nuget package. The name should be exactly same as what you would pass to ``dotnet add package``"
+            HelpMessage = "Name of the nuget package."
         )]
         [string]
-        $packageName,
+        $PackageName,
 
         [Alias('package-version')]
         [Parameter(
@@ -20,7 +20,78 @@ function Import-NuGetPackage {
             HelpMessage = "Exact version of the package to be installed. If none specified, it will try to install the latest one possible"
         )]
         [string]
-        $version,
+        $Version,
+
+        [Alias('source', 'nuget-source')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "A nuget package source to use. If none specified, it will use the default one"
+        )]
+        [string]
+        $NugetSource,
+
+        [Alias('framework', 'tfm', 'target-framework')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Target framework moniker. If none specified, it will use the default one (any)"
+        )]
+        [string]
+        $TargetFramework,
+
+        [Alias('package-directory', 'package-dir', 'dir')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "A directory to install the package into. If none specified, it will use the default one of {HOME}/.add_package/{CALLER_SCRIPT_PATH_HASH}/{CALLER_SCRIPT_CONTENT_HASH}/.nuget/packages/{PACKAGE_NAME}/{PACKAGE_VERSION}"
+        )]
+        [string]
+        $PackageDirectory,
+
+        [Alias('pre-release')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Whether to install a pre-release version of the package. If none specified, it will use the default one (false)"
+        )]
+        [Switch]
+        $PreRelease,
+
+        [Alias('no-cache', 'no-http-cache')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Whether to use the cached version of the package. If none specified, it will use the default one (false)"
+        )]
+        [Switch]
+        $NoHttpCache,
+
+        [Alias('i')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Whether to prompt for user input or not. If none specified, it will use the default one (false)"
+        )]
+        [Switch]
+        $Interactive,
+
+        [Alias('config-file', 'config', 'c')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "A nuget config file to use. If none specified, it will use the default one"
+        )]
+        [string]
+        $ConfigFile,
+
+        [Alias('disable-parallel', 'disable-parallel-processing')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Whether to disable parallel processing or not. If none specified, it will use the default one (false)"
+        )]
+        [Switch]
+        $DisableParallelProcessing,
+
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = "Verbosity level. If none specified, it will use the default one (normal)"
+        )]
+        [string]
+        $Verbosity,
 
         [Alias('assembly-context', 'context-name', 'assembly-context-name', 'context')]
         [Parameter(
@@ -28,7 +99,7 @@ function Import-NuGetPackage {
             HelpMessage = "An assembly load context for the assemblies to load. Think of it as 'region' for your assemblies. If none specified, a random one will be assigned"
         )]
         [string]
-        $assemblyContextName,
+        $AssemblyContextName,
 
         
         [Alias('get-help', '?', '-?', '/?', 'menu')]
@@ -37,17 +108,17 @@ function Import-NuGetPackage {
             HelpMessage = "Help menu",
             ParameterSetName = ""
         )]
-        [string]
-        $help
+        [switch]
+        $Help
     )
 
     $assemblyContext = $null
     try {
-        if ($null -eq $assemblyContextName -or $assemblyContextName -eq '') {
-            $assemblyContextName = [System.Guid]::NewGuid().ToString("N")
+        if ($null -eq $AssemblyContextName -or $AssemblyContextName -eq '') {
+            $AssemblyContextName = [System.Guid]::NewGuid().ToString("N")
         }
 
-        $assemblyContext = [System.Runtime.Loader.AssemblyLoadContext]::new($assemblyContextName, $true);
+        $assemblyContext = [System.Runtime.Loader.AssemblyLoadContext]::new($AssemblyContextName, $true);
         $global:isVerboseMode = $false
         if ($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent) {
             $global:isVerboseMode = $true
@@ -112,11 +183,11 @@ function Import-NuGetPackage {
     
         $callerScriptName = $MyInvocation.PSCommandPath
         LogTrace "Invoked by $callerScriptName. Generating a Hash for it"
-        $hash = Get-MD5Hash $callerScriptName
+        $hash = Get-Adler32Hash $callerScriptName
         LogTrace "$hash will be used to refer to $callerScriptName"
 
         $scriptContents = [System.IO.File]::ReadAllText($callerScriptName)
-        $scriptHash = Get-MD5Hash $scriptContents
+        $scriptHash = Get-Adler32Hash $scriptContents
     
         LogTrace "$scriptHash has been generated for $callerScriptName as form of tracking it's contents"
 
@@ -136,16 +207,25 @@ function Import-NuGetPackage {
 
         Switch-CurrentDirectory $callerPackagesPath
         $dependencies = [System.Collections.Generic.List[NugetPackage]]::new()
+        $nugetPackagesPath = [System.IO.Path]::Combine($callerPackagesPath, ".nuget", "packages")
         if ($isDotFramework) {
-            Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 30
-            $nugetPackagesPath = [System.IO.Path]::Combine($callerPackagesPath, ".nuget", "packages")
-            if ([string]::IsNullOrWhiteSpace($version)) {
-                $output = (nuget install $packageName -OutputDirectory $nugetPackagesPath)
-            }
-            else {
-                $output = (nuget install $packageName -Version $version -OutputDirectory $nugetPackagesPath)
-            }
-            Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 50
+            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
+
+            $command = Build-NugetCliCommand `
+                -PackageName $PackageName `
+                -Version $Version `
+                -NugetSources $NugetSource `
+                -TargetFramework $TargetFramework `
+                -PackageDirectory $nugetPackagesPath `
+                -PreRelease $PreRelease `
+                -NoCache $NoHttpCache `
+                -Interactive $Interactive `
+                -ConfigFile $ConfigFile `
+                -DisableParallelProcessing $DisableParallelProcessing `
+                -Verbosity $Verbosity
+
+            $output = $command
+            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
             LogTrace $output
 
             $childDirs = [System.IO.Directory]::EnumerateDirectories($nugetPackagesPath)
@@ -153,25 +233,25 @@ function Import-NuGetPackage {
                 $splits = $dir.Split([System.IO.Path]::DirectorySeparatorChar)
                 $packageNameWithVersion = $splits[$splits.Count - 1]
                 
-                $matches = $semverRegex.Matches($packageNameWithVersion)
-                if ($matches.Count -eq 0) {
+                $result = $semverRegex.Matches($packageNameWithVersion)
+                if ($result.Count -eq 0) {
                     throw [System.Exception]::new("Unable to parse version for $packageNameWithVersion")
                 }
 
-                $version = $matches[0].Value
-                $packageNameLength = $packageNameWithVersion.Length - $version.Length - 1
-                $packageName = $packageNameWithVersion.Substring(0, $packageNameLength)
+                $installedVersion = $result[0].Value
+                $packageNameLength = $packageNameWithVersion.Length - $installedVersion.Length - 1
+                $PackageName = $packageNameWithVersion.Substring(0, $packageNameLength)
 
                 $package = [NugetPackage]::new()
-                $package.Name = $packageName
-                $package.Version = $version
+                $package.Name = $PackageName
+                $package.Version = $installedVersion
 
                 $assemblyBasePath = [System.IO.Path]::Combine($dir, "lib")
                 $mostRelevantFramework = Get-MostRelevantFrameworkVersion $assemblyBasePath
                 
                 $self.Assemblies = [System.Collections.Generic.List[string]]::new()
                 if ($null -ne $mostRelevantFramework) {
-                    LogTrace "$mostRelevantFramework is the most 'closet' framework to current TFM $systemTfmVersion. Loading this version for $packageName"
+                    LogTrace "$mostRelevantFramework is the most 'closet' framework to current TFM $systemTfmVersion. Loading this version for $PackageName"
                     $assemblyDir = [System.IO.Path]::Combine($assemblyBasePath, $mostRelevantFramework)
                     $childAssemblies = [System.IO.Directory]::EnumerateFiles($assemblyDir, "*.dll")
             
@@ -185,7 +265,7 @@ function Import-NuGetPackage {
             
             # Move the dependent packages to the top of the list, so that they get loaded first
             # Though this doesn't guarantee that the dependent packages will be loaded first, it's a good enough heuristic
-            $requestedPackageIndex = $dependencies.IndexOf({ $_.Name -eq $packageName })
+            $requestedPackageIndex = $dependencies.IndexOf({ $_.Name -eq $PackageName })
             $requestedPackage = $dependencies[$requestedPackageIndex]
             $removed = $dependencies.RemoveAt($requestedPackage)
             $dependencies.Insert($dependencies.Count - 1, $requestedPackage)
@@ -205,18 +285,35 @@ function Import-NuGetPackage {
             Add-PackageLockIfNotExists $csprojFilePath
             LogTrace "Generated lock file for $csprojFilePath"
 
-            Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 30
+            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
 
-            if ([string]::IsNullOrWhiteSpace($version)) {
-                $output = (dotnet add package $packageName)
-            }
-            else {
-                $output = (dotnet add package $packageName --version $version)
-            }
-            Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 50
+
+            $command = Build-DotnetAddPackageCommand `
+                -PackageName $PackageName `
+                -Version $Version `
+                -NugetSources $NugetSource `
+                -TargetFramework $TargetFramework `
+                -PackageDirectory $nugetPackagesPath `
+                -PreRelease $PreRelease
+
+            $output = $command | Invoke-Expression
+            LogTrace($output)
+
+            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+
+            $command = Build-DotnetRestoreCommand `
+                -Verbosity $Verbosity `
+                -ConfigFile $ConfigFile `
+                -DisableParallelProcessing $DisableParallelProcessing `
+                -NoHttpCache $NoHttpCache `
+                -Interactive $Interactive
+
+            $output = $command | Invoke-Expression
+            LogTrace($output)
 
             $flattedDependencies = Convert-NugetPackageLockFile $lockFilePath
             $buildOutputPath = [System.IO.Path]::Combine($callerPackagesPath, "output")
+
             $output = (dotnet build --configuration release --no-restore -o $buildOutputPath)
             LogTrace($output)
         
@@ -231,12 +328,12 @@ function Import-NuGetPackage {
         }
         
         Register-Assemblies $dependencies
-        Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 90
+        Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 90
 
         $output = [ImportNugetPackageOutput]::new()
         $output.InstalledPackages = $dependencies
         $output.AssemblyLoadContext = $assemblyContext
-        Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 100
+        Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 100
         return $output
     }
     catch {
@@ -255,6 +352,203 @@ function Import-NuGetPackage {
     finally {
         Reset-CurrentDirectory
     }
+}
+
+function Build-NugetCliCommand {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]
+        $PackageName,
+
+        [Parameter]
+        [string]
+        $Version,
+
+        [Parameter]
+        [string]
+        $NugetSources,
+
+        [Parameter]
+        [string]
+        $TargetFramework,
+
+        [Parameter]
+        [string]
+        $PackageDirectory,
+
+        [Parameter]
+        [bool]
+        $PreRelease,
+
+        [Parameter]
+        [bool]
+        $NoHttpCache,
+
+        [Parameter]
+        [bool]
+        $Interactive,
+
+        [Parameter]
+        [string]
+        $ConfigFile,
+
+        [Parameter]
+        [bool]
+        $DisableParallelProcessing,
+
+        [Parameter]
+        [string]
+        $Verbosity
+    )
+
+    $command = "nuget install $PackageName"
+
+    if ([string]::IsNullOrWhiteSpace($Version) -eq $false) {
+        $command = "$command -Version $Version"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($NugetSources) -eq $false) {
+        $command = "$command -Source $NugetSources"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($TargetFramework) -eq $false) {
+        $command = "$command -Framework $TargetFramework"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PackageDirectory) -eq $false) {
+        $command = "$command -OutputDirectory $PackageDirectory"
+    }
+
+    if ($PreRelease) {
+        $command = "$command -Prerelease"
+    }
+
+    if ($NoHttpCache) {
+        $command = "$command -NoHttpCache"
+    }
+
+    if ($Interactive) {
+        $command = "$command -Interactive"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ConfigFile) -eq $false) {
+        $command = "$command -ConfigFile $ConfigFile"
+    }
+
+    if ($DisableParallelProcessing) {
+        $command = "$command -DisableParallelProcessing"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Verbosity) -eq $false) {
+        $command = "$command -Verbosity $Verbosity"
+    }
+
+    return $command
+}
+
+function Build-DotnetRestoreCommand {
+    param (
+        [Parameter()]
+        [string]
+        $Verbosity,
+
+        [Parameter()]
+        [string]
+        $ConfigFile,
+
+        [Parameter()]
+        [bool]
+        $DisableParallelProcessing,
+
+        [Parameter()]
+        [bool]
+        $NoHttpCache,
+
+        [Parameter()]
+        [bool]
+        $Interactive
+    )
+
+    $command = "dotnet restore"
+
+    if ([string]::IsNullOrWhiteSpace($Verbosity) -eq $false) {
+        $command = "$command --verbosity $Verbosity"
+    }
+    else {
+        $command = "$command --verbosity normal"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ConfigFile) -eq $false) {
+        $command = "$command --configfile $ConfigFile"
+    }
+
+    if ($DisableParallelProcessing) {
+        $command = "$command --disable-parallel"
+    }
+
+    if ($NoHttpCache) {
+        $command = "$command --no-cache"
+    }
+
+    if ($Interactive) {
+        $command = "$command --interactive"
+    }
+
+    return $command
+}
+
+function Build-DotnetAddPackageCommand {
+    param (
+        [Parameter()]
+        [string]
+        $PackageName,
+
+        [Parameter()]
+        [string]
+        $Version,
+
+        [Parameter()]
+        [string[]]
+        $NugetSources,
+
+        [Parameter()]
+        [string]
+        $TargetFramework,
+
+        [Parameter()]
+        [string]
+        $PackageDirectory,
+
+        [Parameter()]
+        [bool]
+        $PreRelease
+    )
+
+    $command = "dotnet add package $PackageName --no-restore"
+
+    if ([string]::IsNullOrWhiteSpace($Version) -eq $false) {
+        $command = "$command --version $Version"
+    }
+
+    foreach ($source in $NugetSources) {
+        if ([string]::IsNullOrWhiteSpace($source) -eq $false) {
+            $command = "$command --source $source"
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($TargetFramework) -eq $false) {
+        $command = "$command --framework $TargetFramework"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PackageDirectory) -eq $false) {
+        $command = "$command --package-directory $PackageDirectory"
+    }
+
+    if ($PreRelease) {
+        $command = "$command --prerelease"
+    }
+
+    return $command
 }
 
 function InstallMsBuildLocator {
@@ -734,13 +1028,21 @@ function Add-PackageLockIfNotExists([string] $csprojPath) {
     }
 }
 
-function Get-MD5Hash([string] $inputString) {
-    $md5 = [System.Security.Cryptography.MD5]::Create()
-    $inputBytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
-    $hashBytes = $md5.ComputeHash($inputBytes)
-    $md5.Dispose()
+function Get-Adler32Hash([string] $inputString) {
+    $a = 1; $b = 0;
+    $MOD_ADLER = 65521;
+    $ADLER_CONST2 = 65536;
 
-    return [BitConverter]::ToString($hashBytes).ToLower() -replace '-', ''
+    for ($i = 0; $i -lt $inputString.Length; $i++) {
+        $char = $inputString[$i];
+        $charAsInt = [System.Convert]::ToInt32($char);
+        $a = ($a + $charAsInt) % $MOD_ADLER;
+        $b = ($b + $a) % $MOD_ADLER;
+    }
+
+    $finalValue = ($b * $ADLER_CONST2 + $a);
+    $finalValue = [Int64]$finalValue;
+    return $finalValue.ToString("X");
 }
 
 function LogTrace {
@@ -779,3 +1081,5 @@ function LogError {
     [System.Console]::WriteLine("[$([System.DateTime]::Now.ToString())] $message");
     [System.Console]::ForegroundColor = $oldColor
 }
+
+Export-ModuleMember -Function Import-NugetPackage
