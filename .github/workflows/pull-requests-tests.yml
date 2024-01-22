@@ -2,20 +2,20 @@ name: Pull Request Checks
 on:
   pull_request:
     branches:
-      - development
+      - main
     paths:
-      - "**/*.ps1"
+      - "**.ps1"
+      - "**.psm1"
+      - "**.psd1"
+      - "**.yml"
 
 jobs:
   unit-test:
     name: Unit testing
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
-
-      - name: Setup PowerShell
-        uses: microsoft/setup-powershell@v1.0.0
 
       - name: Perform a Pester test
         shell: pwsh

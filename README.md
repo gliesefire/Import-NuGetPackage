@@ -1,5 +1,7 @@
 # Import-NuGetPackage v1.0
 
+![PR Tests](https://github.com/gliesefire/Import-NuGetPackage/actions/workflows/pull-requests-tests/badge.svg)
+
 ## Introduction
 
 Import-NuGetPackage is a PowerShell v2.0+ compatible PowerShell command, and a nuget package installer for powershell scripts.
