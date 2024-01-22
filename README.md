@@ -1,6 +1,6 @@
 # Import-NuGetPackage v1.0
 
-![PR Tests](https://github.com/gliesefire/Import-NuGetPackage/actions/workflows/pull-requests-tests/badge.svg)
+![PR Tests](https://github.com/gliesefire/Import-NuGetPackage/actions/workflows/pull-requests-tests.yml/badge.svg)
 
 ## Introduction
 
