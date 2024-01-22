@@ -576,7 +576,19 @@ function Get-PackageDeets {
     }
 
     LogTrace "Retrieving package details for $packageName"
-    $package = $packageJson.dependencies[$systemTfmVersion][$packageName]
+    $tfmsUsed = $packageJson.dependencies.Keys
+    if ($tfmsUsed.Count -gt 1) {
+        throw [System.Exception]::new("Multiple TFM's found. This is not supported yet")
+    }
+
+    # A hacky way to get the first element from a Dictionary. Somehow .Keys.First() doesn't work
+    $tfmUsed = $null
+    foreach ($tfm in $tfmsUsed) {
+        $tfmUsed = $tfm
+        break;
+    }
+
+    $package = $packageJson.dependencies[$tfmUsed][$packageName]
     $package = [ResolvedNugetPackage] $package
     $self = [NugetPackage]::new()
     $self.Name = $packageName
