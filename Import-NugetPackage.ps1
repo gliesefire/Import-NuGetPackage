@@ -2,7 +2,7 @@
 param (
     [Alias('package-name', 'name')]    
     [Parameter(
-        Mandatory = $true,
+        Mandatory = $false,
         HelpMessage = "Name of the nuget package."
     )]
     [string]
@@ -95,6 +95,17 @@ param (
     [string]
     $AssemblyContextName,
 
+    [Alias('load-into-assembly-context', 'load-into-context')]
+    [Parameter(
+        Mandatory = $false,
+        HelpMessage = 
+        "Whether to load the assemblies into the assembly context or not. 
+        If none specified, it will load the assemblies into current one via reflection
+        This setting is overridden if -AssemblyContextName parameter is specified"
+    )]
+    [switch]
+    $LoadIntoAssemblyContext,
+
     
     [Alias('get-help', '?', '-?', '/?', 'menu')]
     [Parameter(
@@ -106,19 +117,24 @@ param (
     $Help
 )
 
-Import-Module ./Import-NuGetPackage.psm1
-Import-Module ./Show-HelpMenu.psm1
+$psm1Path = [System.IO.Path]::Combine($PSScriptRoot, "Import-NuGetPackage.psm1");
+$helpMenuPath = [System.IO.Path]::Combine($PSScriptRoot, "Show-HelpMenu.psm1");
 
-Show-HelpMenu
+Import-Module $psm1Path
+Import-Module $helpMenuPath
 
-$helpAliases = @('help', 'get-help', '?', '-?', '/?', 'menu')
-if ($helpAliases.Contains($PSBoundParameters.Keys[0])) {
+if ($Help) {
+    Show-HelpMenu
     return
 }
 
 $verboseMode = $PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent
 if ($verboseMode) {
     $Verbosity = "detailed"
+}
+
+if ([string]::IsNullOrWhiteSpace($PackageName)) {
+    $PackageName = Read-Input -prompt "Enter the name of the nuget package to install"
 }
 
 $output = Import-NugetPackage -PackageName $PackageName -Version $Version -NugetSource $NugetSource -TargetFramework $TargetFramework -PackageDirectory $PackageDirectory -PreRelease:$PreRelease -NoHttpCache:$NoHttpCache -Interactive:$Interactive -ConfigFile $ConfigFile -DisableParallelProcessing:$DisableParallelProcessing -Verbosity $Verbosity -AssemblyContextName $AssemblyContextName

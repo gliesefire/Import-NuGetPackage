@@ -1,6 +1,7 @@
-# Import-NuGetPackage v1.0
+# Import-NuGetPackage v1.0.1
 
 ![PR Tests](https://github.com/gliesefire/Import-NuGetPackage/actions/workflows/pull-requests-tests.yml/badge.svg)
+![Import-NuGetPackage Help Menu Screenshot](./HelpMenu.png)
 
 ## Introduction
 
@@ -61,4 +62,5 @@ Import-NugetPackage is released under the MIT license
 
 ## Release Notes
 
-v1.0 - 2024-01-24 First release
+v1.0    - 2024-01-24 First release
+v1.0.1  - 2024-01-25 Fix relative path issues
