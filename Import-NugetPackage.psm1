@@ -729,7 +729,12 @@ function Get-MostRelevantFrameworkVersion([string] $packageBasePath) {
     }
 
     if ($null -eq $mostRelevantFramework) {
-        throw [System.Exception]::new("No supported framework for $packageName")
+        if ($isDotFramework) {
+            LogWarning "$packageName is most probably part of current framework's GAC"
+        }
+        else {
+            LogWarning "$packageName is most probably part of current framework's runtime / SDK pack"
+        }
     }
 
     return $mostRelevantFramework
@@ -1112,6 +1117,20 @@ function LogError {
 
     $oldColor = [System.Console]::ForegroundColor
     [System.Console]::ForegroundColor = [System.ConsoleColor]::Red
+    [System.Console]::WriteLine("");
+    [System.Console]::WriteLine("[$([System.DateTime]::Now.ToString())] $message");
+    [System.Console]::ForegroundColor = $oldColor
+}
+
+function LogWarning {
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]
+        $message
+    )
+
+    $oldColor = [System.Console]::ForegroundColor
+    [System.Console]::ForegroundColor = [System.ConsoleColor]::DarkYellow
     [System.Console]::WriteLine("");
     [System.Console]::WriteLine("[$([System.DateTime]::Now.ToString())] $message");
     [System.Console]::ForegroundColor = $oldColor

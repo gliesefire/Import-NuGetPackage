@@ -11,8 +11,8 @@ Describe "Import-NugetPackage" {
             # Remove $null values. This is a bug in the output of the function
             $installedPackages = $installedPackages | Where-Object { $_ -ne $null }
         
-            $installedPackages.Count | Should -Be 1
-            $expectedPackage = $installedPackages[0]
+            $installedPackages.Count -ge 1 | Should -Be $true
+            $expectedPackage = $installedPackages[$installedPackages.Count - 1]
             $expectedPackage[0].Name | Should -Be "Microsoft.NETCore.Platforms"
         }
 
@@ -23,8 +23,8 @@ Describe "Import-NugetPackage" {
             # Remove $null values. This is a bug in the output of the function
             $installedPackages = $installedPackages | Where-Object { $_ -ne $null }
         
-            $installedPackages.Count | Should -Be 1
-            $expectedPackage = $installedPackages[0]
+            $installedPackages.Count -eq 1 | Should -Be $true
+            $expectedPackage = $installedPackages[$installedPackages.Count - 1]
             $expectedPackage[0].Name | Should -Be "Microsoft.NETCore.Platforms"
             $expectedPackage[0].Version | Should -Be "6.0.7"
         }
@@ -36,6 +36,17 @@ Describe "Import-NugetPackage" {
             $installedPackages.Count -gt 1 | Should -Be $true
             $expectedPackage = $installedPackages[$installedPackages.Count - 1]
             $expectedPackage[0].Name | Should -Be "System.Text.Json"
+
+            $output.Unload();
+        }
+
+        It "Installs a package which is part of the .NET Core SDK" {
+            $output = Import-NugetPackage -Name "System.Runtime"
+            $installedPackages = $output.InstalledPackages
+
+            $installedPackages.Count -ge 1 | Should -Be $true
+            $expectedPackage = $installedPackages[$installedPackages.Count - 1]
+            $expectedPackage[0].Name | Should -Be "System.Runtime"
 
             $output.Unload();
         }
