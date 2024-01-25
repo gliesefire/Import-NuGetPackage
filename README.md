@@ -64,3 +64,4 @@ Import-NugetPackage is released under the MIT license
 
 v1.0    - 2024-01-24 First release
 v1.0.1  - 2024-01-25 Fix relative path issues
+v1.0.2  - 2024-01-25 Fix for packages part of runtime
