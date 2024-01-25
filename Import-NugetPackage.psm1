@@ -1,7 +1,8 @@
 using namespace System.Linq;
 using namespace System.Collections.Generic;
 
-Import-Module ./Show-HelpMenu.psm1
+$helpMenuPath = [System.IO.Path]::Combine($PSScriptRoot, "Show-HelpMenu.psm1");
+Import-Module $helpMenuPath
 
 function Import-NuGetPackage {
     [CmdletBinding()]
@@ -101,6 +102,17 @@ function Import-NuGetPackage {
         [string]
         $AssemblyContextName,
 
+        [Alias('load-into-assembly-context', 'load-into-context')]
+        [Parameter(
+            Mandatory = $false,
+            HelpMessage = 
+            "Whether to load the assemblies into the assembly context or not. 
+            If none specified, it will load the assemblies into current one via reflection
+            This setting is overridden if -AssemblyContextName parameter is specified"
+        )]
+        [switch]
+        $LoadIntoAssemblyContext,
+
         
         [Alias('get-help', '?', '-?', '/?', 'menu')]
         [Parameter(
@@ -112,13 +124,12 @@ function Import-NuGetPackage {
         $Help
     )
 
-    $assemblyContext = $null
     try {
-        if ($null -eq $AssemblyContextName -or $AssemblyContextName -eq '') {
-            $AssemblyContextName = [System.Guid]::NewGuid().ToString("N")
+        if ($Help) {
+            Show-HelpMenu
+            return
         }
 
-        $assemblyContext = [System.Runtime.Loader.AssemblyLoadContext]::new($AssemblyContextName, $true);
         $global:isVerboseMode = $false
         if ($PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent) {
             $global:isVerboseMode = $true
@@ -327,13 +338,12 @@ function Import-NuGetPackage {
             $dependencies = $flattedDependencies
         }
         
-        Register-Assemblies $dependencies
+        $assemblyContext = Register-Assemblies $dependencies $LoadIntoAssemblyContext $AssemblyContextName
         Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 90
 
         $output = [ImportNugetPackageOutput]::new()
         $output.InstalledPackages = $dependencies
         $output.AssemblyLoadContext = $assemblyContext
-        Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 100
         return $output
     }
     catch {
@@ -351,6 +361,7 @@ function Import-NuGetPackage {
     }
     finally {
         Reset-CurrentDirectory
+        Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 100
     }
 }
 
@@ -729,10 +740,28 @@ function Register-Assemblies {
     param (
         [Parameter(Mandatory = $true, HelpMessage = "List of all assemblies to load")]
         [List[NugetPackage]]
-        $packagesToLoad
+        $PackagesToLoad,
+
+        [Parameter(Mandatory = $false, HelpMessage = "Whether to load the assemblies into an assembly context or not")]
+        [bool]
+        $LoadIntoAssemblyContext,
+
+        [Parameter(Mandatory = $false, HelpMessage = "Name of the assembly context to load the assemblies into")]
+        [string]
+        $AssemblyContextName
     )
 
-    foreach ($package in $packagesToLoad) {
+    $assemblyContext = $null;
+    if ($LoadIntoAssemblyContext) {
+        if ([string]::IsNullOrWhiteSpace($AssemblyContextName)) {
+            $AssemblyContextName = [System.Guid]::NewGuid().ToString()
+        }
+
+        $assemblyContext = [System.Runtime.Loader.AssemblyLoadContext]::new($AssemblyContextName, $true)
+        LogTrace "Created assembly context $AssemblyContextName"
+    }
+
+    foreach ($package in $PackagesToLoad) {
         foreach ($assembly in $package.Assemblies) {
             if (![System.IO.File]::Exists($assembly)) {
                 # The library must be part of the GAC. No need for us to load it
@@ -740,8 +769,15 @@ function Register-Assemblies {
             }
                     
             try {
-                $loaded = [System.Reflection.Assembly]::LoadFile($assembly)
-                LogTrace "Loaded assembly $($package.Name) into current context"
+                if ($LoadIntoAssemblyContext) {
+                    $loaded = $assemblyContext.LoadFromAssemblyPath($assembly)
+                    LogTrace "Loaded assembly $($package.Name) into assembly context $AssemblyContextName"
+                    continue
+                }
+                else {
+                    $loaded = [System.Reflection.Assembly]::LoadFile($assembly)
+                    LogTrace "Loaded assembly $($package.Name) into current context"    
+                }
             }
             catch {
                 Write-Exception $Error
@@ -749,6 +785,8 @@ function Register-Assemblies {
             }
         }
     }
+
+    return $assemblyContext
 }
 
 function Convert-NugetPackageLockFile {
@@ -777,7 +815,9 @@ class ImportNugetPackageOutput {
     $AssemblyLoadContext
 
     [void] Unload() {
-        $this.AssemblyLoadContext.Unload()
+        if ($null -ne $this.AssemblyLoadContext) {
+            $this.AssemblyLoadContext.Unload()
+        }
     }
 }
 
@@ -969,11 +1009,6 @@ function DeleteAllFoldersExcept ([string] $basePath, [string] $excludePath) {
 function Remove-ProjectFolder([string] $path) {
     Push-Location $path
     $output = (dotnet clean)
-
-    $programFilePath = [System.IO.Path]::Combine($path, "Program.cs")
-    if ([System.IO.File]::Exists($programFilePath)) {
-        [System.IO.File]::Delete($programFilePath)
-    }
 
     $binFolder = [System.IO.Path]::Combine($path, "bin")
     $objFolder = [System.IO.Path]::Combine($path, "obj")
