@@ -1,5 +1,8 @@
 name: Pull Request Checks
 on:
+  push:
+    tags:
+      - "*"
   pull_request:
     branches:
       - main
@@ -13,6 +16,8 @@ jobs:
   unit-test:
     name: Unit testing
     runs-on: [ubuntu-latest]
+    permissions:
+      contents: write
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
@@ -20,3 +25,7 @@ jobs:
       - name: Perform a Pester test
         shell: pwsh
         run: Invoke-Pester
+
+      - uses: ncipollo/release-action@v1
+        with:
+          artifacts: "*.ps1,*.psm1,*.psd1, LICENSE, README.md"

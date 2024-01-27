@@ -5,11 +5,12 @@
 #
 # Generated on: 22-01-2024
 #
+# Updated on: 28-01-2024
 
 @{
 
     # Version number of this module.
-    ModuleVersion          = '1.0.2'
+    ModuleVersion          = '1.1.0'
 
     # Supported PSEditions
     CompatiblePSEditions   = @(
@@ -52,7 +53,7 @@
         PSData = @{
 
             # Tags applied to this module. These help with module discovery in online galleries.
-            Tags                     = @('nuget', 'import-package', 'load-assemblies')
+            Tags                     = @('nuget', 'import-package', 'load-assemblies', 'netcore', 'netframework', 'powershell', 'powershell-core')
 
             # A URL to the license for this module.
             LicenseUri               = 'https://github.com/gliesefire/Import-NuGetPackage/blob/main/LICENSE'
