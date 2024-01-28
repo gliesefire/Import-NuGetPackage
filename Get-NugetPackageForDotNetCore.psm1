@@ -188,6 +188,60 @@ function Build-DotnetRestoreCommand {
     return $command
 }
 
+function Get-NearestRID {
+    param (
+        [string]
+        $rid,
+
+        [string]
+        $libPath
+    )
+
+    $packageSupportedRidPaths = [System.IO.Directory]::EnumerateDirectories($libPath)
+    $packageSupportedRids = $packageSupportedRidPaths | ForEach-Object { $_.Split([System.IO.Path]::DirectorySeparatorChar)[-1] }
+    $runtimeGraphJsonPath = [System.IO.Path]::Combine($PSScriptRoot, "runtime.json")
+    $runtimeGraphJsonContents = [System.IO.File]::ReadAllText($runtimeGraphJsonPath)
+    $ridGraph = [System.Text.Json.JsonSerializer]::Deserialize($runtimeGraphJsonContents, [RidGraph])
+    $runtimes = [Dictionary[string, RidImport]] $($ridGraph.runtimes)
+
+    $ridFallbacks = [List[string]]::new()
+    $importStack = [Stack[string]]::new()
+    do {
+        $currentRid = $null
+        if ($runtimes.TryGetValue($rid, [ref]$currentRid) -eq $false) {
+            throw [System.Exception]::new("Unable to find RID $rid in runtime graph")
+        }
+
+        $ridFallbacks.Add($rid)
+        for ($i = 0; $i -lt $currentRid.imports.Count; $i++) {
+            $importStack.Push($currentRid.imports[$i])
+        }
+
+        if ($importStack.Count -eq 0) {
+            break
+        }
+
+        $rid = $importStack.Pop()
+    } while ($true);
+
+    # Check for intersection between the package supported RID's and the RID fallbacks
+    $nearestRid = $null
+    foreach ($rid in $ridFallbacks) {
+        if ($packageSupportedRids.Contains($rid)) {
+            $nearestRid = $rid
+            break
+        }
+    }
+
+    if ($null -eq $nearestRid -and $ridFallbacks.Count -gt 0 -and $ridFallbacks.Contains("any")) {
+        $firstRid = $packageSupportedRids[0]
+        LogWarning "No ""supported"" RID found for $rid. Falling back to 'any' RID. i.e. the first supported RID $firstRid"
+        $nearestRid = $firstRid
+    }
+
+    return $nearestRid
+}
+
 function Build-DotnetAddPackageCommand {
     param (
         [Parameter()]
@@ -235,7 +289,7 @@ function Build-DotnetAddPackageCommand {
         $command = "$command --package-directory ""$PackageDirectory"""
     }
 
-    if ($PreRelease -and $([string]::IsNullOrWhiteSpace($Version) -eq $true)){
+    if ($PreRelease -and $([string]::IsNullOrWhiteSpace($Version) -eq $true)) {
         $command = "$command --prerelease"
     }
 
@@ -398,17 +452,23 @@ function Get-PackageDeets {
             throw [System.Exception]::new("Unable to load browser based runtimes")
         }
 
-        $nativeRuntimePath = [System.IO.Path]::Combine($packageBasePath, "runtimes", $rid, "native")
-        if ([System.IO.Directory]::Exists($nativeRuntimePath) -eq $false) {
-            LogTrace "No native runtimes found for $PackageName"
-        }
-        else {
+        $supportedRidsBasePath = [System.IO.Path]::Combine($packageBasePath, "runtimes")
+        if ([System.IO.Directory]::Exists($supportedRidsBasePath) -eq $true) {
+            $nearestRid = Get-NearestRID $rid $supportedRidsBasePath
+            if ($null -eq $nearestRid) {
+                throw [System.Exception]::new("This nuget package doesn't support the current runtime identifier $rid")
+            }
+
+            $nativeRuntimePath = [System.IO.Path]::Combine($supportedRidsBasePath, $nearestRid, "native")
             LogTrace "Found native runtimes for $PackageName"
             $nativeRuntimes = [System.IO.Directory]::EnumerateFiles($nativeRuntimePath, "*.*")
 
             foreach ($nativeRuntime in $nativeRuntimes) {
                 $self.NativeLibraries.Add($nativeRuntime.ToString())
             }
+        }
+        else {
+            LogTrace "No native runtimes found for $PackageName"
         }
     }
 

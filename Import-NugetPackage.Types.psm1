@@ -100,6 +100,17 @@ class NugetPackageLock {
     $dependencies
 }
 
+class RidImport {
+    [string[]]
+    [System.Text.Json.Serialization.JsonPropertyName("#import")]
+    $imports
+}
+
+class RidGraph {
+    [Dictionary[string, RidImport]]
+    $runtimes
+}
+
 if ($isDotnetCore) {
     class ScriptAssemblyContext : System.Runtime.Loader.AssemblyLoadContext {
         [string]

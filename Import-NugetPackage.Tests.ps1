@@ -119,7 +119,7 @@ Describe "Import-NugetPackage" {
             $outputDir = [System.IO.Path]::Combine($PSScriptRoot, $([System.Guid]::NewGuid().ToString("N")))
             Import-NugetPackage -Name "Dapper" -PackageDirectory $outputDir
 
-            $packageOutputDir = [System.IO.Path]::Combine($outputDir, "Dapper")
+            $packageOutputDir = [System.IO.Path]::Combine($outputDir, "dapper")
             $outputDirExists = [System.IO.Directory]::Exists($packageOutputDir)
             $outputDirExists | Should -Be $true
         }
