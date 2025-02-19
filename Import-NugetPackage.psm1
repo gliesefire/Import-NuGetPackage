@@ -284,6 +284,10 @@ function Import-NuGetPackage {
         else {                    
             $lockFilePath = [System.IO.Path]::Combine($callerPackagesPath, "packages.lock.json")
             $csprojFilePath = [System.IO.Path]::Combine($callerPackagesPath, "$scriptHash.csproj")
+
+			$doesLockFileAlreadyExist = [System.IO.File]::Exists($lockFilePath)
+			$doesCsprojFileAlreadyExist = [System.IO.File]::Exists($csprojFilePath)
+
             if ([System.IO.File]::Exists($csprojFilePath) -eq $false) {
                 LogTrace "A project file doesn't exist yet. Creating one"
                 $output = (dotnet new console)
@@ -292,35 +296,40 @@ function Import-NuGetPackage {
                 # Rest all of them are auxillary
                 Remove-ProjectFolder $callerPackagesPath
             }
-    
-            Add-PackageLockIfNotExists $csprojFilePath
-            LogTrace "Generated lock file for $csprojFilePath"
 
-            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
+			if (($doesLockFileAlreadyExist -eq $false) -or ($doesCsprojFileAlreadyExist -eq $false)) {
+				Add-PackageLockIfNotExists $csprojFilePath
+				LogTrace "Generated lock file for $csprojFilePath"
 
+				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
 
-            $command = Build-DotnetAddPackageCommand `
-                -PackageName $PackageName `
-                -Version $Version `
-                -NugetSources $NugetSource `
-                -TargetFramework $TargetFramework `
-                -PackageDirectory $nugetPackagesPath `
-                -PreRelease $PreRelease
+				$command = Build-DotnetAddPackageCommand `
+					-PackageName $PackageName `
+					-Version $Version `
+					-NugetSources $NugetSource `
+					-TargetFramework $TargetFramework `
+					-PackageDirectory $nugetPackagesPath `
+					-PreRelease $PreRelease
 
-            $output = $command | Invoke-Expression
-            LogTrace($output)
+				$output = $command | Invoke-Expression
+				LogTrace($output)
 
-            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
 
-            $command = Build-DotnetRestoreCommand `
-                -Verbosity $Verbosity `
-                -ConfigFile $ConfigFile `
-                -DisableParallelProcessing $DisableParallelProcessing `
-                -NoHttpCache $NoHttpCache `
-                -Interactive $Interactive
+				$command = Build-DotnetRestoreCommand `
+					-Verbosity $Verbosity `
+					-ConfigFile $ConfigFile `
+					-DisableParallelProcessing $DisableParallelProcessing `
+					-NoHttpCache $NoHttpCache `
+					-Interactive $Interactive
 
-            $output = $command | Invoke-Expression
-            LogTrace($output)
+				$output = $command | Invoke-Expression
+				LogTrace($output)
+			}
+			else {
+				LogTrace "Lock file $lockFilePath already exists. Skipping package addition"
+				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+			}
 
             $flattedDependencies = Convert-NugetPackageLockFile $lockFilePath
             $buildOutputPath = [System.IO.Path]::Combine($callerPackagesPath, "output")
@@ -331,6 +340,8 @@ function Import-NuGetPackage {
             foreach ($package in $flattedDependencies) {
                 for ($i = 0; $i -lt $package.Assemblies.Count; $i++) {
                     $assemblyName = [System.IO.Path]::GetFileName($package.Assemblies[$i])
+
+					LogInfo "Loading $assemblyName"
                     $package.Assemblies[$i] = [System.IO.Path]::Combine($buildOutputPath, $assemblyName)
                 }
             }
@@ -344,6 +355,8 @@ function Import-NuGetPackage {
         $output = [ImportNugetPackageOutput]::new()
         $output.InstalledPackages = $dependencies
         $output.AssemblyLoadContext = $assemblyContext
+
+		Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 99
         return $output
     }
     catch {
@@ -631,7 +644,13 @@ function Get-UnderlyingProcessFramework() {
     }
 
     LogTrace "Underlying process framework is $descriptiveVersion"
-    if ($descriptiveVersion.StartsWith(".NET 8")) {
+	if ($descriptiveVersion.StartsWith(".NET 10")) {
+        return "net10.0"
+    }
+	elseif ($descriptiveVersion.StartsWith(".NET 9")) {
+        return "net9.0"
+    }
+    elseif ($descriptiveVersion.StartsWith(".NET 8")) {
         return "net8.0"
     }
     elseif ($descriptiveVersion.StartsWith(".NET 7")) {
@@ -685,6 +704,10 @@ function Get-UnderlyingProcessFramework() {
     elseif ($descriptiveVersion.StartsWith(".NET Core 1.0")) {
         return "netcoreapp1.0"
     }
+	else
+	{
+		throw [System.Exception]::new("Unsupported framework $descriptiveVersion")
+	}
 }
 
 function Get-MostRelevantFrameworkVersion([string] $packageBasePath) {
