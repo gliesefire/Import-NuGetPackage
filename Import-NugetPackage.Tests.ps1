@@ -17,7 +17,7 @@ Describe "Import-NugetPackage" {
         }
 
         It "Installs a package with specific version, with no dependencies" {
-            $output = Import-NugetPackage -Name "Microsoft.NETCore.Platforms" -Version "6.0.7"
+            $output = Import-NugetPackage -Name "Microsoft.NETCore.Platforms" -Version "7.0.4"
             $installedPackages = $output.InstalledPackages
 
             # Remove $null values. This is a bug in the output of the function
@@ -26,7 +26,7 @@ Describe "Import-NugetPackage" {
             $installedPackages.Count -eq 1 | Should -Be $true
             $expectedPackage = $installedPackages[$installedPackages.Count - 1]
             $expectedPackage[0].Name | Should -Be "Microsoft.NETCore.Platforms"
-            $expectedPackage[0].Version | Should -Be "6.0.7"
+            $expectedPackage[0].Version | Should -Be "7.0.4"
         }
 
         It "Installs a package with 1 or more dependency" {

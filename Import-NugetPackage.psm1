@@ -285,8 +285,9 @@ function Import-NuGetPackage {
             $lockFilePath = [System.IO.Path]::Combine($callerPackagesPath, "packages.lock.json")
             $csprojFilePath = [System.IO.Path]::Combine($callerPackagesPath, "$scriptHash.csproj")
 
-			$doesLockFileAlreadyExist = [System.IO.File]::Exists($lockFilePath)
-			$doesCsprojFileAlreadyExist = [System.IO.File]::Exists($csprojFilePath)
+			# TODO Write proper logic to not build / restore if there's no change in the csproj file
+			$doesLockFileAlreadyExist = $false
+			$doesCsprojFileAlreadyExist = $false
 
             if ([System.IO.File]::Exists($csprojFilePath) -eq $false) {
                 LogTrace "A project file doesn't exist yet. Creating one"
@@ -341,7 +342,7 @@ function Import-NuGetPackage {
                 for ($i = 0; $i -lt $package.Assemblies.Count; $i++) {
                     $assemblyName = [System.IO.Path]::GetFileName($package.Assemblies[$i])
 
-					LogInfo "Loading $assemblyName"
+					LogTrace "Loading $assemblyName"
                     $package.Assemblies[$i] = [System.IO.Path]::Combine($buildOutputPath, $assemblyName)
                 }
             }
