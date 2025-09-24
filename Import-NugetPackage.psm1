@@ -135,6 +135,9 @@ function Import-NuGetPackage {
             $global:isVerboseMode = $true
         }
         
+        # Validate prerequisites before proceeding
+        Test-Prerequisites
+        
         # Get the .NET Framework version used by the PowerShell process
         $global:systemTfmVersion = Get-UnderlyingProcessFramework
         Write-Debug "TFM version used is $systemTfmVersion."
@@ -153,10 +156,28 @@ function Import-NuGetPackage {
         }
 
         if ($isDotFramework) {
-            $global:msBuildPath = Get-MsBuildPath
+            try {
+                $global:msBuildPath = Get-MsBuildPath
+                if ([string]::IsNullOrWhiteSpace($msBuildPath)) {
+                    throw [System.Exception]::new("Failed to locate MSBuild. Please ensure Visual Studio or Build Tools are installed.")
+                }
+            }
+            catch {
+                
+                throw [System.Exception]::new("Failed to get MSBuild path: $($_.Exception.Message). Please install Visual Studio or Build Tools for Visual Studio.")
+            }
         }
 
-        $global:nugetInstallationDir = Get-NuGetInstallationDirectory
+        try {
+            $global:nugetInstallationDir = Get-NuGetInstallationDirectory
+            if ([string]::IsNullOrWhiteSpace($nugetInstallationDir)) {
+                throw [System.Exception]::new("Failed to get NuGet installation directory. Please ensure .NET SDK is properly installed.")
+            }
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("Failed to get NuGet installation directory: $($_.Exception.Message). Please ensure .NET SDK is properly installed.")
+        }
 
         # This is sort of like a bitmap of backward compatible versions of each SDK. For any particular TFM in the below list, all the versions to the "right side" of it are supported by it.
         # Theoritically, .net8.0 supports all the .net versions, whereas netcoreapp1.0 only supports itself, and net standard versions <= 1.6
@@ -235,9 +256,22 @@ function Import-NuGetPackage {
                 -DisableParallelProcessing $DisableParallelProcessing `
                 -Verbosity $Verbosity
 
-            $output = $command
             Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
-            LogTrace $output
+            LogTrace "Executing command: $command"
+            
+            try {
+                $output = Invoke-Expression $command
+                LogTrace $output
+                
+                # Check if the command was successful by verifying package directory was created
+                if (![System.IO.Directory]::Exists($nugetPackagesPath) -or ([System.IO.Directory]::GetDirectories($nugetPackagesPath).Count -eq 0)) {
+                    throw [System.Exception]::new("NuGet package installation failed. No packages were installed to $nugetPackagesPath")
+                }
+            }
+            catch {
+                LogError $_.Exception.ToString()
+                throw [System.Exception]::new("Failed to install NuGet package '$PackageName': $($_.Exception.Message). Command: $command")
+            }
 
             $childDirs = [System.IO.Directory]::EnumerateDirectories($nugetPackagesPath)
             foreach ($dir in $childDirs) {
@@ -278,71 +312,148 @@ function Import-NuGetPackage {
             # Though this doesn't guarantee that the dependent packages will be loaded first, it's a good enough heuristic
             $requestedPackageIndex = $dependencies.IndexOf({ $_.Name -eq $PackageName })
             $requestedPackage = $dependencies[$requestedPackageIndex]
-            $removed = $dependencies.RemoveAt($requestedPackage)
+            $dependencies.RemoveAt($requestedPackageIndex)
             $dependencies.Insert($dependencies.Count - 1, $requestedPackage)
         }
         else {                    
             $lockFilePath = [System.IO.Path]::Combine($callerPackagesPath, "packages.lock.json")
             $csprojFilePath = [System.IO.Path]::Combine($callerPackagesPath, "$scriptHash.csproj")
 
-			# TODO Write proper logic to not build / restore if there's no change in the csproj file
-			$doesLockFileAlreadyExist = $false
-			$doesCsprojFileAlreadyExist = $false
+            $doesLockFileAlreadyExist = [System.IO.File]::Exists($lockFilePath)
+            $doesCsprojFileAlreadyExist = [System.IO.File]::Exists($csprojFilePath)
 
             if ([System.IO.File]::Exists($csprojFilePath) -eq $false) {
                 LogTrace "A project file doesn't exist yet. Creating one"
-                $output = (dotnet new console)
+                try {
+                    $output = Invoke-Expression "dotnet new console"
+                    LogTrace $output
+                    
+                    # Verify the project was created successfully
+                    if (![System.IO.File]::Exists($csprojFilePath)) {
+                        throw [System.Exception]::new("Failed to create project file at $csprojFilePath")
+                    }
+                }
+                catch {
+                    LogError $_.Exception.ToString()
+                    throw [System.Exception]::new("Failed to create new .NET project: $($_.Exception.Message). Please ensure .NET SDK is properly installed and accessible.")
+                }
 
                 # Remove unnecessary build files & Program.cs. We only care about packages.lock.json file & csproj file.
                 # Rest all of them are auxillary
                 Remove-ProjectFolder $callerPackagesPath
             }
 
-			if (($doesLockFileAlreadyExist -eq $false) -or ($doesCsprojFileAlreadyExist -eq $false)) {
-				Add-PackageLockIfNotExists $csprojFilePath
-				LogTrace "Generated lock file for $csprojFilePath"
+            if (($doesLockFileAlreadyExist -eq $false) -or ($doesCsprojFileAlreadyExist -eq $false)) {
+                Add-PackageLockIfNotExists $csprojFilePath
+                LogTrace "Generated lock file for $csprojFilePath"
 
-				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
+                Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
 
-				$command = Build-DotnetAddPackageCommand `
-					-PackageName $PackageName `
-					-Version $Version `
-					-NugetSources $NugetSource `
-					-TargetFramework $TargetFramework `
-					-PackageDirectory $nugetPackagesPath `
-					-PreRelease $PreRelease
+                $command = Build-DotnetAddPackageCommand `
+                    -PackageName $PackageName `
+                    -Version $Version `
+                    -NugetSources $NugetSource `
+                    -TargetFramework $TargetFramework `
+                    -PackageDirectory $nugetPackagesPath `
+                    -PreRelease $PreRelease
 
-				$output = $command | Invoke-Expression
-				LogTrace($output)
+                Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 40
+                LogTrace "Executing command: $command"
+				
+                try {
+                    $output = Invoke-Expression $command
+                    LogTrace $output
 
-				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+					$all = ($buildOutput -join "`n") -replace '\e\[[0-9;]*m',''
 
-				$command = Build-DotnetRestoreCommand `
-					-Verbosity $Verbosity `
-					-ConfigFile $ConfigFile `
-					-DisableParallelProcessing $DisableParallelProcessing `
-					-NoHttpCache $NoHttpCache `
-					-Interactive $Interactive
+					if ($all -match '\s+(?<err>\d+)\s+Error\(s\)') {
+						if ([int]$matches['err'] -ne 0) {
+							throw [System.Exception]::new("Package installation command reported errors:
 
-				$output = $command | Invoke-Expression
-				LogTrace($output)
-			}
-			else {
-				LogTrace "Lock file $lockFilePath already exists. Skipping package addition"
-				Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
-			}
+	$output")
+						}
+					}
+                }
+                catch {
+                    LogError $_.Exception.ToString()
+                    throw [System.Exception]::new("Failed to add NuGet package '$PackageName': $($_.Exception.Message). Command: $command")
+                }
+
+                Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+
+                $command = Build-DotnetRestoreCommand `
+                    -Verbosity $Verbosity `
+                    -ConfigFile $ConfigFile `
+                    -DisableParallelProcessing $DisableParallelProcessing `
+                    -NoHttpCache $NoHttpCache `
+                    -Interactive $Interactive
+
+                LogTrace "Executing command: $command"
+				
+                try {
+                    $output = Invoke-Expression $command
+                    LogTrace $output
+
+					$all = ($buildOutput -join "`n") -replace '\e\[[0-9;]*m',''
+
+					if ($all -match '\s+(?<err>\d+)\s+Error\(s\)') {
+						if ([int]$matches['err'] -ne 0) {
+							throw [System.Exception]::new("Package installation command reported errors:
+
+	$output")
+						}
+					}
+                }
+                catch {
+                    LogError $_.Exception.ToString()
+                    throw [System.Exception]::new("Failed to restore NuGet packages: $($_.Exception.Message). Command: $command")
+                }
+            }
+            else {
+                LogTrace "Lock file $lockFilePath already exists. Skipping package addition"
+                Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
+            }
 
             $flattedDependencies = Convert-NugetPackageLockFile $lockFilePath
             $buildOutputPath = [System.IO.Path]::Combine($callerPackagesPath, "output")
 
-            $output = (dotnet build --configuration release --no-restore -o $buildOutputPath)
-            LogTrace($output)
+            Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 70
+            LogTrace "Executing dotnet build command"
+            
+            try {
+                $output = Invoke-Expression "dotnet build --configuration release --no-restore -o $buildOutputPath"
+                LogTrace $output
+
+				$all = ($buildOutput -join "`n") -replace '\e\[[0-9;]*m',''
+
+				if ($all -match '\s+(?<err>\d+)\s+Error\(s\)') {
+					if ([int]$matches['err'] -ne 0) {
+						throw [System.Exception]::new("Package installation command reported errors:
+
+$output")
+					}
+				}
+                
+                # Verify build output directory was created and contains assemblies
+                if (![System.IO.Directory]::Exists($buildOutputPath)) {
+                    throw [System.Exception]::new("Build output directory was not created at $buildOutputPath")
+                }
+                
+                $buildAssemblies = [System.IO.Directory]::GetFiles($buildOutputPath, "*.dll")
+                if ($buildAssemblies.Count -eq 0) {
+                    throw [System.Exception]::new("No assemblies were built. Build may have failed silently.")
+                }
+            }
+            catch {
+                LogError $_.Exception.ToString()
+                throw [System.Exception]::new("Failed to build project: $($_.Exception.Message). Please check that the package and its dependencies are compatible with your target framework.")
+            }
         
             foreach ($package in $flattedDependencies) {
                 for ($i = 0; $i -lt $package.Assemblies.Count; $i++) {
                     $assemblyName = [System.IO.Path]::GetFileName($package.Assemblies[$i])
 
-					LogTrace "Loading $assemblyName"
+                    LogInfo "Loading $assemblyName"
                     $package.Assemblies[$i] = [System.IO.Path]::Combine($buildOutputPath, $assemblyName)
                 }
             }
@@ -357,7 +468,7 @@ function Import-NuGetPackage {
         $output.InstalledPackages = $dependencies
         $output.AssemblyLoadContext = $assemblyContext
 
-		Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 99
+        Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 99
         return $output
     }
     catch {
@@ -585,55 +696,163 @@ function InstallMsBuildLocator {
         LogTrace $output
     }
 
-    $loaded = [System.Reflection.Assembly]::LoadFile($locatorPath)
+    $null = [System.Reflection.Assembly]::LoadFile($locatorPath)
 }
 
 function Get-MsBuildPath {
-    InstallMsBuildLocator
-    $msBuildPath = [Microsoft.Build.Locator.MSBuildLocator]::RegisterDefaults().MSBuildPath;
+    try {
+        InstallMsBuildLocator
+        $msBuildPath = [Microsoft.Build.Locator.MSBuildLocator]::RegisterDefaults().MSBuildPath;
 
-    if ([string]::IsNullOrWhiteSpace($msBuildPath)) {
-        $msBuildPath = [Microsoft.Build.Locator.MSBuildLocator]::QueryVisualStudioInstances().OrderByDescending({ $_.Version }).First().MSBuildPath;
         if ([string]::IsNullOrWhiteSpace($msBuildPath)) {
-            throw [System.Exception]::new("Unable to locate MSBuild. Please install it from https://visualstudio.microsoft.com/downloads/")
+            $instances = [Microsoft.Build.Locator.MSBuildLocator]::QueryVisualStudioInstances()
+            if ($instances -and $instances.Count -gt 0) {
+                $msBuildPath = $instances.OrderByDescending({ $_.Version }).First().MSBuildPath;
+            }
+            
+            if ([string]::IsNullOrWhiteSpace($msBuildPath)) {
+                throw [System.Exception]::new("Unable to locate MSBuild. Please install Visual Studio or Build Tools for Visual Studio from https://visualstudio.microsoft.com/downloads/")
+            }
         }
-    }
+        
+        # Verify the MSBuild path exists
+        if (![System.IO.File]::Exists($msBuildPath)) {
+            throw [System.Exception]::new("MSBuild executable not found at: $msBuildPath")
+        }
 
-    return $msBuildPath
+        return $msBuildPath
+    }
+    catch {
+        throw [System.Exception]::new("Failed to locate MSBuild: $($_.Exception.Message). Please install Visual Studio or Build Tools for Visual Studio.")
+    }
 }
 
 
 function InstallNuget {
-    $sourceNugetExe = "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
-    $targetNugetExe = "$env:UserProfile\nuget.exe"
+    try {
+        $sourceNugetExe = "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
+        $targetNugetExe = "$env:UserProfile\nuget.exe"
+        
+        # Verify we're on Windows
+        $currentOs = (Get-CimInstance -ClassName CIM_OperatingSystem).Caption
+        if (!$currentOs.Contains("Microsoft Windows")) {
+            throw [System.Exception]::new("This module is designed for Windows only. Current OS: $currentOs")
+        }
+        
+        if (![System.IO.File]::Exists($targetNugetExe)) {
+            LogInfo "Downloading Nuget from $sourceNugetExe to $targetNugetExe"
+            
+            try {
+                $output = Invoke-WebRequest $sourceNugetExe -OutFile $targetNugetExe -UseBasicParsing
+                LogTrace $output
+                
+                # Verify the download was successful
+                if (![System.IO.File]::Exists($targetNugetExe)) {
+                    throw [System.Exception]::new("Downloaded file not found at expected location")
+                }
+                
+                # Verify the file is not empty
+                $fileInfo = Get-Item $targetNugetExe
+                if ($fileInfo.Length -eq 0) {
+                    throw [System.Exception]::new("Downloaded file is empty")
+                }
+                
+                LogInfo "Download completed successfully"
+            }
+            catch {
+                LogError $_.Exception.ToString()
+                throw [System.Exception]::new("Failed to download NuGet CLI: $($_.Exception.Message). Please check your internet connection and try again.")
+            }
+        }
+        else {
+            LogInfo "Nuget already exists at $targetNugetExe. Setting alias for it"
+        }
+
+        # Test that nuget.exe works
+        try {
+            Invoke-Expression "& `"$targetNugetExe`" help" 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw [System.Exception]::new("NuGet executable is not working properly")
+            }
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("NuGet executable is corrupted or not working: $($_.Exception.Message)")
+        }
+
+        Set-Alias -Name "nuget" -Value "$targetNugetExe" -Scope Global
+        LogTrace "Set alias for nuget.exe to $targetNugetExe"
+    }
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("Failed to install NuGet CLI: $($_.Exception.Message)")
+    }
+}
+
+function Test-Prerequisites {
+    [CmdletBinding()]
+    param()
     
-    if (![System.IO.File]::Exists($targetNugetExe)) {
-        LogInfo "Downloading Nuget from $sourceNugetExe to $targetNugetExe"
-        $output = (Invoke-WebRequest $sourceNugetExe -OutFile $targetNugetExe)
-        LogTrace $output
-        LogInfo "Download completed"
+    # Test if dotnet CLI is available
+    try {
+        $dotnetVersion = Invoke-Expression "dotnet --version" 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dotnetVersion)) {
+            throw [System.Exception]::new("dotnet CLI is not available or not working properly")
+        }
+        LogTrace "Found .NET SDK version: $dotnetVersion"
     }
-    else {
-        LogInfo "Nuget already exists at $targetNugetExe. Setting alias for it"
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("dotnet CLI is not installed or not in PATH. Please install .NET SDK from https://dotnet.microsoft.com/download")
     }
-
-    # switch case for possible values of Get-CimInstance -ClassName CIM_OperatingSystem
-    # https://docs.microsoft.com/en-us/windows/win32/cimwin32prov/win32-operatingsystem
-
-
-    $currentOs = (Get-CimInstance -ClassName CIM_OperatingSystem).Caption
-    if (!$currentOs.Contains("Microsoft Windows")) {
-        throw [System.Exception]::new("Why are you even trying to run this on a non-windows OS?")
+    
+    # Test if we can access NuGet
+    try {
+        Invoke-Expression "dotnet nuget locals global-packages --list" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw [System.Exception]::new("Unable to access NuGet configuration")
+        }
+        LogTrace "NuGet access verified"
     }
-
-    Set-Alias -Name "nuget" -Value "$targetNugetExe" -Scope Global
-    LogTrace "Set alias for nuget.exe to $targetNugetExe"
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("Unable to access NuGet. Please check your .NET SDK installation and network connectivity.")
+    }
+    
+    # Test if we can create temporary directories
+    try {
+        $tempDir = [System.IO.Path]::GetTempPath()
+        $testDir = [System.IO.Path]::Combine($tempDir, "Import-NugetPackage-Test-$(Get-Random)")
+        $created = [System.IO.Directory]::CreateDirectory($testDir)
+        if ($created) {
+            [System.IO.Directory]::Delete($testDir, $true)
+        }
+        LogTrace "File system access verified"
+    }
+    catch {
+        throw [System.Exception]::new("Unable to create temporary directories. Please check file system permissions.")
+    }
 }
 
 function Get-NuGetInstallationDirectory() {
-    # Run the "dotnet nuget locals" command to get the global packages directory
-    $nugetGlobalPackagesDir = (dotnet nuget locals global-packages --list | Select-String -Pattern "global-packages: ").ToString().TrimStart("global-packages: ")
-    return $nugetGlobalPackagesDir
+    try {
+        # Run the "dotnet nuget locals" command to get the global packages directory
+        $nugetOutput = Invoke-Expression "dotnet nuget locals global-packages --list" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw [System.Exception]::new("Failed to execute 'dotnet nuget locals' command")
+        }
+        
+        $nugetGlobalPackagesDir = ($nugetOutput | Select-String -Pattern "global-packages: ").ToString().TrimStart("global-packages: ")
+        if ([string]::IsNullOrWhiteSpace($nugetGlobalPackagesDir)) {
+            throw [System.Exception]::new("Could not determine NuGet global packages directory")
+        }
+        
+        return $nugetGlobalPackagesDir
+    }
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("Failed to get NuGet installation directory: $($_.Exception.Message)")
+    }
 }
 
 function Get-UnderlyingProcessFramework() {
@@ -645,10 +864,10 @@ function Get-UnderlyingProcessFramework() {
     }
 
     LogTrace "Underlying process framework is $descriptiveVersion"
-	if ($descriptiveVersion.StartsWith(".NET 10")) {
+    if ($descriptiveVersion.StartsWith(".NET 10")) {
         return "net10.0"
     }
-	elseif ($descriptiveVersion.StartsWith(".NET 9")) {
+    elseif ($descriptiveVersion.StartsWith(".NET 9")) {
         return "net9.0"
     }
     elseif ($descriptiveVersion.StartsWith(".NET 8")) {
@@ -705,10 +924,9 @@ function Get-UnderlyingProcessFramework() {
     elseif ($descriptiveVersion.StartsWith(".NET Core 1.0")) {
         return "netcoreapp1.0"
     }
-	else
-	{
-		throw [System.Exception]::new("Unsupported framework $descriptiveVersion")
-	}
+    else {
+        throw [System.Exception]::new("Unsupported framework $descriptiveVersion")
+    }
 }
 
 function Get-MostRelevantFrameworkVersion([string] $packageBasePath) {
@@ -799,12 +1017,12 @@ function Register-Assemblies {
                     
             try {
                 if ($LoadIntoAssemblyContext) {
-                    $loaded = $assemblyContext.LoadFromAssemblyPath($assembly)
+                    $null = $assemblyContext.LoadFromAssemblyPath($assembly)
                     LogTrace "Loaded assembly $($package.Name) into assembly context $AssemblyContextName"
                     continue
                 }
                 else {
-                    $loaded = [System.Reflection.Assembly]::LoadFile($assembly)
+                    $null = [System.Reflection.Assembly]::LoadFile($assembly)
                     LogTrace "Loaded assembly $($package.Name) into current context"    
                 }
             }
@@ -824,16 +1042,71 @@ function Convert-NugetPackageLockFile {
         [string]
         $packageFilePath
     )
-    $jsonContents = [System.IO.File]::ReadAllText($packageFilePath)
-    $packageLock = [System.Text.Json.JsonSerializer]::Deserialize($jsonContents, [NugetPackageLock]);
-    $packageLock = [NugetPackageLock] $packageLock
-    LogTrace "Parsed lock file $packageFilePath. Version: $($packageLock.version) Dependencies : $($packageLock.dependencies.Keys.Count)"
     
-    Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 60
-    $packageDeets = Get-PackageDeets $packageLock $packageName
-    Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 80
-    $flattedDependencies = Convert-FromNestedListToFlatList $packageDeets
-    return $flattedDependencies
+    try {
+        # Verify the lock file exists
+        if (![System.IO.File]::Exists($packageFilePath)) {
+            throw [System.Exception]::new("Package lock file not found: $packageFilePath")
+        }
+        
+        # Read and parse the JSON file
+        $jsonContents = [System.IO.File]::ReadAllText($packageFilePath)
+        if ([string]::IsNullOrWhiteSpace($jsonContents)) {
+            throw [System.Exception]::new("Package lock file is empty: $packageFilePath")
+        }
+        
+        try {
+            $packageLock = [System.Text.Json.JsonSerializer]::Deserialize($jsonContents, [NugetPackageLock])
+            $packageLock = [NugetPackageLock] $packageLock
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("Failed to parse package lock file JSON: $($_.Exception.Message)")
+        }
+        
+        # Validate the parsed content
+        if ($null -eq $packageLock) {
+            throw [System.Exception]::new("Failed to deserialize package lock file")
+        }
+        
+        if ($null -eq $packageLock.dependencies -or $packageLock.dependencies.Count -eq 0) {
+            throw [System.Exception]::new("No dependencies found in package lock file")
+        }
+        
+        LogTrace "Parsed lock file $packageFilePath. Version: $($packageLock.version) Dependencies : $($packageLock.dependencies.Keys.Count)"
+        
+        Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 60
+        
+        try {
+            $packageDeets = Get-PackageDeets $packageLock $packageName
+            if ($null -eq $packageDeets) {
+                throw [System.Exception]::new("Failed to get package details for $packageName")
+            }
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("Failed to process package details: $($_.Exception.Message)")
+        }
+        
+        Write-Progress -Activity "Installing Nuget package $packageName" -PercentComplete 80
+        
+        try {
+            $flattedDependencies = Convert-FromNestedListToFlatList $packageDeets
+            if ($null -eq $flattedDependencies -or $flattedDependencies.Count -eq 0) {
+                throw [System.Exception]::new("No flattened dependencies found")
+            }
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("Failed to flatten dependencies: $($_.Exception.Message)")
+        }
+        
+        return $flattedDependencies
+    }
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("Failed to convert package lock file: $($_.Exception.Message)")
+    }
 }
 
 class ImportNugetPackageOutput {
@@ -1014,8 +1287,8 @@ function Write-Exception {
     $fullTrace = $buffer.ToString()
 
     LogError $fullTrace
-    $cleared = $buffer.Clear()
-    $cleared = $errorTrace.Clear()
+    $buffer.Clear() | Out-Null
+    $errorTrace.Clear() | Out-Null
 }
 
 function DeleteAllFoldersExcept ([string] $basePath, [string] $excludePath) {
@@ -1024,8 +1297,8 @@ function DeleteAllFoldersExcept ([string] $basePath, [string] $excludePath) {
     foreach ($directory in $childDirectories) {
         if ($directory = $excludePath) { continue; }
         try {
-            $output = (Remove-Item -Path $directory -Recurse -Force)
-            LogTrace $output
+            Remove-Item -Path $directory -Recurse -Force | Out-Null
+            LogTrace "Removed directory: $directory"
         }
         catch {
             # Ignore if unable to delete the directory due to lock issues
@@ -1037,17 +1310,17 @@ function DeleteAllFoldersExcept ([string] $basePath, [string] $excludePath) {
 
 function Remove-ProjectFolder([string] $path) {
     Push-Location $path
-    $output = (dotnet clean)
+    dotnet clean | Out-Null
 
     $binFolder = [System.IO.Path]::Combine($path, "bin")
     $objFolder = [System.IO.Path]::Combine($path, "obj")
 
     if ([System.IO.Directory]::Exists($binFolder)) {
-        $output = (Remove-Item -Path $binFolder -Recurse -Force)
+        Remove-Item -Path $binFolder -Recurse -Force | Out-Null
     }
 
     if ([System.IO.Directory]::Exists($objFolder)) {
-        $output = (Remove-Item -Path $objFolder -Recurse -Force)
+        Remove-Item -Path $objFolder -Recurse -Force | Out-Null
     }
 }
 
@@ -1075,20 +1348,55 @@ function Reset-CurrentDirectory {
 
 
 function Add-PackageLockIfNotExists([string] $csprojPath) {
-    # Load the .csproj file as XML
-    $csprojXml = New-Object System.Xml.XmlDocument
-    $csprojXml.Load($csprojPath)
+    try {
+        # Verify the project file exists
+        if (![System.IO.File]::Exists($csprojPath)) {
+            throw [System.Exception]::new("Project file not found: $csprojPath")
+        }
+        
+        # Load the .csproj file as XML
+        $csprojXml = New-Object System.Xml.XmlDocument
+        try {
+            $csprojXml.Load($csprojPath)
+        }
+        catch {
+            LogError $_.Exception.ToString()
+            throw [System.Exception]::new("Failed to load project file as XML: $($_.Exception.Message)")
+        }
 
-    # Check if the RestorePackagesWithLockFile element already exists
-    $propertyGroup = $csprojXml.SelectSingleNode("//Project/PropertyGroup[RestorePackagesWithLockFile]")
-    if ($null -eq $propertyGroup) {
-        # If not, create and add the element
-        $newProperty = $csprojXml.CreateElement("RestorePackagesWithLockFile")
-        $newProperty.InnerText = "true"
-        $csprojXml.DocumentElement.Item("PropertyGroup").AppendChild($newProperty)
-    
-        # Save the changes back to the .csproj file
-        $csprojXml.Save($csprojPath)
+        # Check if the RestorePackagesWithLockFile element already exists
+        $propertyGroup = $csprojXml.SelectSingleNode("//Project/PropertyGroup[RestorePackagesWithLockFile]")
+        if ($null -eq $propertyGroup) {
+            # Find the first PropertyGroup element
+            $firstPropertyGroup = $csprojXml.SelectSingleNode("//Project/PropertyGroup")
+            if ($null -eq $firstPropertyGroup) {
+                # Create a PropertyGroup if none exists
+                $firstPropertyGroup = $csprojXml.CreateElement("PropertyGroup")
+                $csprojXml.DocumentElement.AppendChild($firstPropertyGroup)
+            }
+            
+            # Create and add the RestorePackagesWithLockFile element
+            $newProperty = $csprojXml.CreateElement("RestorePackagesWithLockFile")
+            $newProperty.InnerText = "true"
+            $firstPropertyGroup.AppendChild($newProperty)
+        
+            # Save the changes back to the .csproj file
+            try {
+                $csprojXml.Save($csprojPath)
+                LogTrace "Added RestorePackagesWithLockFile to project file"
+            }
+            catch {
+                LogError $_.Exception.ToString()
+                throw [System.Exception]::new("Failed to save project file: $($_.Exception.Message)")
+            }
+        }
+        else {
+            LogTrace "RestorePackagesWithLockFile already exists in project file"
+        }
+    }
+    catch {
+        LogError $_.Exception.ToString()
+        throw [System.Exception]::new("Failed to add package lock configuration: $($_.Exception.Message)")
     }
 }
 
