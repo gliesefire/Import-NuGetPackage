@@ -1,4 +1,4 @@
-# Import-NuGetPackage v1.1.1
+# Import-NuGetPackage v1.1.2
 
 ![PR Tests](https://github.com/gliesefire/Import-NuGetPackage/actions/workflows/pull-requests-tests.yml/badge.svg)
 ![Import-NuGetPackage Help Menu Screenshot](./HelpMenu.png)
@@ -66,3 +66,4 @@ v1.0    - 2024-01-24 First release
 v1.0.1  - 2024-01-25 Fix relative path issues
 v1.0.2  - 2024-01-25 Fix for packages part of runtime
 v1.1.1  - 2025-02-19 Support for .NET 9
+v1.1.2  - 2026-01-01 Support for .NET 10, and forward .Verbose parameter to script calls

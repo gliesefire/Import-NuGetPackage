@@ -183,7 +183,7 @@ function Import-NuGetPackage {
         # Theoritically, .net8.0 supports all the .net versions, whereas netcoreapp1.0 only supports itself, and net standard versions <= 1.6
         $netCoreHeirarchy = [List[string]]::new()
         $temp = @(
-            "net8.0", "net7.0", "net6.0", "net5.0", "netcoreapp3.1",
+            "net10.0", "net9.0", "net8.0", "net7.0", "net6.0", "net5.0", "netcoreapp3.1",
             "netcoreapp3.0", "netstandard2.1", "netcoreapp2.2", "netcoreapp2.0", "netstandard2.0",
             "netcoreapp1.1", "netcoreapp1.0", "netstandard1.6", "netstandard1.5", "netstandard1.4",
             "netstandard1.3", "netstandard1.2", "netstandard1.1", "netstandard1.0"
@@ -228,10 +228,14 @@ function Import-NuGetPackage {
         $basePath = [System.IO.Path]::Combine($homeDir, ".add_package", $hash)
         $callerPackagesPath = [System.IO.Path]::Combine($homeDir, ".add_package", $hash, $scriptHash)
 
-        $created = [System.IO.Directory]::CreateDirectory($callerPackagesPath)
+        $directoryAlreadyExisted = [System.IO.Directory]::Exists($callerPackagesPath)
+        [System.IO.Directory]::CreateDirectory($callerPackagesPath) | Out-Null
 
-        if ($created) {
+        if (-not $directoryAlreadyExisted) {
             LogTrace "Cache directory {HOME}/.add_package/$hash/$scriptHash doesn't exist yet. Created."
+        }
+        else {
+            LogTrace "Cache directory {HOME}/.add_package/$hash/$scriptHash already exists. Using cached data."
         }
 
         DeleteAllFoldersExcept $basePath $callerPackagesPath
@@ -319,10 +323,13 @@ function Import-NuGetPackage {
             $lockFilePath = [System.IO.Path]::Combine($callerPackagesPath, "packages.lock.json")
             $csprojFilePath = [System.IO.Path]::Combine($callerPackagesPath, "$scriptHash.csproj")
 
-            $doesLockFileAlreadyExist = [System.IO.File]::Exists($lockFilePath)
-            $doesCsprojFileAlreadyExist = [System.IO.File]::Exists($csprojFilePath)
+	            # Check if the csproj file exists (not whether we should skip - we check package presence separately)
+            $doesCsprojFileExist = [System.IO.File]::Exists($csprojFilePath)
+            
+            # Check if THIS specific package is already in the csproj
+            $isPackageAlreadyReferenced = Test-PackageReferenceExists $csprojFilePath $PackageName
 
-            if ([System.IO.File]::Exists($csprojFilePath) -eq $false) {
+            if ($doesCsprojFileExist -eq $false) {
                 LogTrace "A project file doesn't exist yet. Creating one"
                 try {
                     $output = Invoke-Expression "dotnet new console"
@@ -343,10 +350,12 @@ function Import-NuGetPackage {
                 Remove-ProjectFolder $callerPackagesPath
             }
 
-            if (($doesLockFileAlreadyExist -eq $false) -or ($doesCsprojFileAlreadyExist -eq $false)) {
-                Add-PackageLockIfNotExists $csprojFilePath
-                LogTrace "Generated lock file for $csprojFilePath"
+            # Always ensure the lock file config is in place
+            Add-PackageLockIfNotExists $csprojFilePath
 
+            # Only add the package if it's not already referenced in the csproj
+            if ($isPackageAlreadyReferenced -eq $false) {
+                LogTrace "Package '$PackageName' not found in csproj. Adding it now."
                 Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 30
 
                 $command = Build-DotnetAddPackageCommand `
@@ -381,6 +390,7 @@ function Import-NuGetPackage {
 
                 Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
 
+                # Restore is needed after adding a new package
                 $command = Build-DotnetRestoreCommand `
                     -Verbosity $Verbosity `
                     -ConfigFile $ConfigFile `
@@ -410,7 +420,7 @@ function Import-NuGetPackage {
                 }
             }
             else {
-                LogTrace "Lock file $lockFilePath already exists. Skipping package addition"
+                LogTrace "Package '$PackageName' already exists in csproj. Skipping package addition."
                 Write-Progress -Activity "Installing Nuget package $PackageName" -PercentComplete 50
             }
 
@@ -1249,7 +1259,7 @@ function Get-PackageDeets {
 
     $self.Assemblies = [System.Collections.Generic.List[string]]::new()
     if ($null -ne $mostRelevantFramework) {
-        LogTrace "$mostRelevantFramework is the most 'closet' framework to current TFM $systemTfmVersion. Loading this version for $packageName"
+        LogTrace "$mostRelevantFramework is the most 'closet' framework to current TFM $systemTfmVersion, for $packageBasePath. Loading this version for $packageName"
         $assemblyDir = [System.IO.Path]::Combine($packageBasePath, $mostRelevantFramework)
         $childAssemblies = [System.IO.Directory]::EnumerateFiles($assemblyDir, "*.dll")
 
@@ -1346,6 +1356,40 @@ function Reset-CurrentDirectory {
     $global:oldSessionDir = $null;
 }
 
+
+function Test-PackageReferenceExists([string] $csprojPath, [string] $packageName) {
+    # Check if a specific package reference already exists in the csproj file
+    if (![System.IO.File]::Exists($csprojPath)) {
+        return $false
+    }
+    
+    try {
+        $csprojXml = New-Object System.Xml.XmlDocument
+        $csprojXml.Load($csprojPath)
+        
+        # Look for PackageReference with matching Include attribute (case-insensitive)
+        $packageRef = $csprojXml.SelectSingleNode("//Project/ItemGroup/PackageReference[@Include]")
+        if ($null -eq $packageRef) {
+            return $false
+        }
+        
+        # Check all PackageReference nodes for our package
+        $packageRefs = $csprojXml.SelectNodes("//Project/ItemGroup/PackageReference")
+        foreach ($ref in $packageRefs) {
+            $includeAttr = $ref.GetAttribute("Include")
+            if ($includeAttr -ieq $packageName) {
+                LogTrace "Package '$packageName' is already referenced in csproj"
+                return $true
+            }
+        }
+        
+        return $false
+    }
+    catch {
+        LogTrace "Error checking package reference: $($_.Exception.Message)"
+        return $false
+    }
+}
 
 function Add-PackageLockIfNotExists([string] $csprojPath) {
     try {
