@@ -11,7 +11,10 @@
             "script": "${file}",
             "attachDotnetDebugger": true,
             "createTemporaryIntegratedConsole": true,
-            "args": []
+            "args": [
+				"MySql.Data",
+				"-Verbose"
+			]
         }
     ]
 }
